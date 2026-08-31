@@ -111,7 +111,7 @@ def calcular_indice_calidad(df):
 # Sidebar — Parámetros de consulta y opciones de análisis
 # ------------------------------------------------------------------
 st.sidebar.header("⚙️ Parámetros de consulta")
-nombre_estudiante = st.sidebar.text_input("Nombre del estudiante", "Tu Nombre Aquí")
+nombre_estudiante = st.sidebar.text_input("Nombre del estudiante", "Julian")
 codigo_estacion = st.sidebar.text_input("Código de estación", "34")
 fecha_desde = st.sidebar.date_input("Desde", pd.to_datetime("2026-08-23")).strftime("%Y-%m-%d")
 fecha_hasta = st.sidebar.date_input("Hasta", pd.to_datetime("2026-08-30")).strftime("%Y-%m-%d")
@@ -144,43 +144,44 @@ if consultar:
         if not registros:
             st.warning("No hay registros para esta estación y rango de fechas. Prueba otro código u otro rango.")
         else:
-            # 1. Limpieza y preparación de datos
+            # 1. Limpieza inicial de datos crudos
             df = pd.DataFrame(registros)
             df = df.rename(columns={LLAVE_FECHA: "fecha", LLAVE_VALOR: "nivel"})
             df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
             df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
             df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
 
-            # 2. Cálculos hidrológicos avanzados
             lat, lon, origen_coords = detectar_coordenadas(datos_crudos, codigo_estacion)
             indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
 
-            # Suavizado de media móvil
-            df["nivel_suavizado"] = df["nivel"].rolling(window=ventana_suavizado, min_periods=1).mean()
-
-            # Cálculo de la tasa de cambio / velocidad de crecimiento (m/h)
-            df["diferencia_horas"] = df["fecha"].diff().dt.total_seconds() / 3600.0
-            df["tasa_cambio_m_h"] = (df["nivel"].diff() / df["diferencia_horas"]).replace([np.inf, -np.inf], np.nan)
-
-            # ------------------------------------------------------
-            # Filtrado de Outliers para alertas y estadísticas reales
-            # ------------------------------------------------------
+            # 2. Depuración estricta de outliers (Filtro IQR)
             Q1, Q3 = df["nivel"].quantile(0.25), df["nivel"].quantile(0.75)
             IQR = Q3 - Q1
             lim_inf, lim_sup = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
-            df_limpio = df[(df["nivel"] >= lim_inf) & (df["nivel"] <= lim_sup) & (df["nivel"] >= 0)]
+            
+            df_limpio = df[(df["nivel"] >= lim_inf) & (df["nivel"] <= lim_sup) & (df["nivel"] >= 0)].copy()
             if df_limpio.empty:
-                df_limpio = df
+                df_limpio = df.copy()
 
-            # Métricas estadísticas para umbrales de alerta (calculadas sobre datos válidos sin errores)
+            # 3. Cálculos hidrológicos sobre datos limpios
+            df_limpio["nivel_suavizado"] = df_limpio["nivel"].rolling(window=ventana_suavizado, min_periods=1).mean()
+            
+            # Recalcular tasa de cambio en la serie limpia para evitar saltos falsos
+            df_limpio["diferencia_horas"] = df_limpio["fecha"].diff().dt.total_seconds() / 3600.0
+            df_limpio["tasa_cambio_m_h"] = (df_limpio["nivel"].diff() / df_limpio["diferencia_horas"]).replace([np.inf, -np.inf], np.nan)
+
             media_nivel = df_limpio["nivel"].mean()
             std_nivel = df_limpio["nivel"].std()
             max_nivel = df_limpio["nivel"].max()
             min_nivel = df_limpio["nivel"].min()
             max_tasa_subida = df_limpio["tasa_cambio_m_h"].max()
 
-            umbral_amarillo = media_nivel + std_nivel
-            umbral_rojo = media_nivel + (2 * std_nivel)
+            # Umbrales basados en percentiles (P95 = Amarillo, P99 = Rojo) para evitar falsas alarmas
+            umbral_amarillo = df_limpio["nivel"].quantile(0.95)
+            umbral_rojo = df_limpio["nivel"].quantile(0.99)
+
+            # También guardamos el df procesado para gráficos
+            df["nivel_suavizado"] = df["nivel"].rolling(window=ventana_suavizado, min_periods=1).mean()
 
             # ------------------------------------------------------
             # UI: Muestreo de Resultados
@@ -243,8 +244,8 @@ if consultar:
                     st.write("**Parámetros de Variabilidad**")
                     st.write(f"- Rango total de variación ($\Delta_{{máx-mín}}$): **{max_nivel - min_nivel:.2f} m**")
                     st.write(f"- Mediana ($P_{{50}}$): **{df_limpio['nivel'].median():.2f} m**")
-                    st.write(f"- Umbral Alerta Amarilla ($\mu + 1\sigma$): **{umbral_amarillo:.2f} m**")
-                    st.write(f"- Umbral Alerta Roja ($\mu + 2\sigma$): **{umbral_rojo:.2f} m**")
+                    st.write(f"- Umbral Alerta Amarilla ($P_{{95}}$): **{umbral_amarillo:.2f} m**")
+                    st.write(f"- Umbral Alerta Roja ($P_{{99}}$): **{umbral_rojo:.2f} m**")
 
             with st.expander("🔍 Auditoría de Calidad y Huecos de Información"):
                 st.write(f"- Huecos de reporte en serie temporal: **{huecos}**")
@@ -252,8 +253,8 @@ if consultar:
                 st.write("El índice pondera la completitud del registro continuado (70%) junto a la baja tasa de anomalías (30%).")
 
             with st.expander("💾 Visualizar y descargar datos crudos"):
-                st.dataframe(df[["fecha", "nivel", "nivel_suavizado", "tasa_cambio_m_h"]], use_container_width=True)
-                csv = df.to_csv(index=False).encode("utf-8")
+                st.dataframe(df_limpio[["fecha", "nivel", "nivel_suavizado", "tasa_cambio_m_h"]], use_container_width=True)
+                csv = df_limpio.to_csv(index=False).encode("utf-8")
                 st.download_button("⬇️ Descargar Reporte CSV", csv, file_name=f"reporte_estacion_{codigo_estacion}.csv", mime="text/csv")
 
 else:
