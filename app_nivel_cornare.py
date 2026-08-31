@@ -5,10 +5,11 @@ import streamlit as st
 import plotly.graph_objects as go
 import urllib3
 
+# Desactivar advertencias de SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ------------------------------------------------------------------
-# Configuración de Página y CSS
+# 1. Configuración de Página y CSS Personalizado
 # ------------------------------------------------------------------
 st.set_page_config(
     page_title="Estación 34 — Julian Taborda Bedoya",
@@ -38,7 +39,6 @@ st.markdown("""
         margin-bottom: 1.5rem;
     }
 
-    /* Estilo del botón principal */
     div.stButton > button:first-child {
         background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%);
         color: #FFFFFF !important;
@@ -50,7 +50,6 @@ st.markdown("""
         margin-top: 25px;
     }
 
-    /* Tarjeta contenedora de la Sección del Cauce */
     .cauce-card {
         background-color: #FFFFFF;
         padding: 24px;
@@ -67,11 +66,36 @@ st.markdown("""
         border-left: 5px solid #0284C7;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
     }
+    
+    .alert-card-verde {
+        background-color: #ECFDF5;
+        border: 2px solid #10B981;
+        border-radius: 12px;
+        padding: 14px;
+        color: #065F46;
+        text-align: center;
+    }
+    .alert-card-amarilla {
+        background-color: #FFFBEB;
+        border: 2px solid #F59E0B;
+        border-radius: 12px;
+        padding: 14px;
+        color: #92400E;
+        text-align: center;
+    }
+    .alert-card-roja {
+        background-color: #FEF2F2;
+        border: 2px solid #EF4444;
+        border-radius: 12px;
+        padding: 14px;
+        color: #991B1B;
+        text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# Parámetros Fijos
+# 2. Parámetros Fijos y Session State
 # ------------------------------------------------------------------
 NOMBRE_ESTUDIANTE = "Julian Taborda Bedoya"
 CODIGO_ESTACION = "34"
@@ -80,8 +104,15 @@ LAT_ESTACION = 6.0254
 LON_ESTACION = -75.4337
 API_BASE_URL = "https://marco.cornare.gov.co/api/v1/estaciones"
 
+UMBRAL_VERDE = 72.0      # cm
+UMBRAL_AMARILLO = 107.0  # cm
+
+# Inicializar estado persistente para los datos
+if "df_datos" not in st.session_state:
+    st.session_state.df_datos = None
+
 # ------------------------------------------------------------------
-# Funciones de Datos
+# 3. Funciones de Consulta y Cálculo
 # ------------------------------------------------------------------
 def obtener_serie_nivel(codigo_estacion, desde, hasta, calidad=1):
     url = f"{API_BASE_URL}/{codigo_estacion}/nivel"
@@ -99,21 +130,51 @@ def obtener_todas_las_paginas(datos_json):
     while siguiente_url:
         try:
             resp = requests.get(siguiente_url, timeout=30, verify=False)
-            if resp.status_code != 200: break
+            if resp.status_code != 200: 
+                break
             pagina = resp.json()
             registros.extend(pagina.get("values", []))
             siguiente_url = pagina.get("next")
-        except: break
+        except Exception:
+            break
     return registros
 
+def calcular_indice_calidad(df):
+    if df.empty or len(df) < 2:
+        return 0.0, 0, 0
+
+    diffs = df["fecha"].diff().dropna()
+    if diffs.empty:
+        return 0.0, 0, 0
+
+    frecuencia_tipica = diffs.mode()
+    freq = frecuencia_tipica.iloc[0] if len(frecuencia_tipica) > 0 else pd.Timedelta(minutes=5)
+    
+    rango_completo = pd.date_range(start=df["fecha"].min(), end=df["fecha"].max(), freq=freq)
+    esperados = len(rango_completo)
+    huecos = max(0, esperados - len(df))
+    completitud = max(0.0, 1.0 - (huecos / esperados)) if esperados > 0 else 0.0
+
+    Q1, Q3 = df["nivel_cm"].quantile(0.25), df["nivel_cm"].quantile(0.75)
+    IQR = Q3 - Q1
+    if IQR == 0:
+        proporcion_outliers = 0.0
+        n_outliers = 0
+    else:
+        lim_inf, lim_sup = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
+        es_outlier = (df["nivel_cm"] < lim_inf) | (df["nivel_cm"] > lim_sup) | (df["nivel_cm"] < 0)
+        proporcion_outliers = es_outlier.mean()
+        n_outliers = int(es_outlier.sum())
+
+    indice = (completitud * 0.7 + (1.0 - proporcion_outliers) * 0.3) * 100.0
+    return round(indice, 1), int(huecos), n_outliers
+
 # ------------------------------------------------------------------
-# Generador de Gráfico: Sección del Cauce (Plotly)
+# 4. Generador del Gráfico: Sección del Cauce (Fijo sin Zoom)
 # ------------------------------------------------------------------
 def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107, y_max=368):
-    # Asegurar que el nivel sea un valor numérico float nativo
     nivel_cm = float(nivel_cm) if pd.notnull(nivel_cm) else 0.0
 
-    # Geometría del perfil de la quebrada (ancho en m, profundidad en cm)
     x_base = np.array([0, 1.0, 1.6, 2.2, 5.3, 5.9, 6.5, 7.5])
     y_base = np.array([150, 150, 15, 0, 0, 15, 220, 220])
     
@@ -122,7 +183,7 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
 
     fig = go.Figure()
 
-    # 1. Dibujar Perfil del Terreno (Beige)
+    # Perfil del terreno
     fig.add_trace(go.Scatter(
         x=x_fine, y=y_fine,
         fill='tozeroy',
@@ -132,7 +193,7 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
         hoverinfo='skip'
     ))
 
-    # 2. Dibujar Agua en el Cauce (Azul)
+    # Nivel de agua
     if nivel_cm > 0:
         mask_agua = y_fine <= nivel_cm
         if np.any(mask_agua):
@@ -150,7 +211,7 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
                 hoverinfo='skip'
             ))
 
-    # 3. Barra Lateral del Semáforo
+    # Barra lateral de alertas
     fig.add_shape(type="rect", x0=7.6, y0=0, x1=8.1, y1=umbral_verde,
                   fillcolor="#10B981", line_width=0)
     fig.add_shape(type="rect", x0=7.6, y0=umbral_verde, x1=8.1, y1=umbral_amarillo,
@@ -158,11 +219,11 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
     fig.add_shape(type="rect", x0=7.6, y0=umbral_amarillo, x1=8.1, y1=y_max,
                   fillcolor="#EF4444", line_width=0)
 
-    # 4. Línea Horizontal de Nivel de Agua
+    # Línea horizontal del nivel de agua
     fig.add_shape(type="line", x0=0, y0=nivel_cm, x1=7.8, y1=nivel_cm,
                   line=dict(color="#0F172A", width=2, dash="dash"))
 
-    # 5. Anotación con la etiqueta del nivel
+    # Anotación del nivel
     fig.add_annotation(
         x=7.8, y=nivel_cm,
         text=f"<b>{nivel_cm:.1f} cm ➔</b>",
@@ -174,18 +235,20 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
         xanchor="right"
     )
 
-    # Configuración Visual
+    # Bloqueo estricto de zoom y movimiento
     fig.update_layout(
         height=430,
         margin=dict(l=40, r=20, t=10, b=40),
         plot_bgcolor='white',
         paper_bgcolor='white',
+        dragmode=False,
         xaxis=dict(
             title=dict(text="<b>Ancho cauce (m)</b>", font=dict(color="#64748B", size=12)),
             range=[-0.2, 8.3],
             showgrid=False,
             zeroline=False,
-            dtick=2
+            dtick=2,
+            fixedrange=True
         ),
         yaxis=dict(
             title=dict(text="<b>Nivel (cm)</b>", font=dict(color="#64748B", size=12)),
@@ -193,19 +256,20 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
             showgrid=True,
             gridcolor='#F1F5F9',
             zeroline=False,
-            tickvals=[0, 100, 200, 300, 368]
+            tickvals=[0, 100, 200, 300, 368],
+            fixedrange=True
         )
     )
     return fig
-    
+
 # ------------------------------------------------------------------
-# Encabezado Principal
+# 5. Encabezado Principal
 # ------------------------------------------------------------------
 st.markdown(f'<div class="titulo-principal">🌊 Monitoreo Hidrológico — {NOMBRE_ESTACION}</div>', unsafe_allow_html=True)
 st.markdown(f'<div class="subtitulo-grande">Estudiante: {NOMBRE_ESTUDIANTE} · Estación activa: {CODIGO_ESTACION}</div>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# Panel Superior de Fechas
+# 6. Panel Superior de Selección de Fechas
 # ------------------------------------------------------------------
 with st.container():
     col_f1, col_f2, col_f3, col_f4 = st.columns([3, 3, 3, 3])
@@ -221,19 +285,21 @@ with st.container():
 st.markdown("<hr style='margin-top: 10px; margin-bottom: 25px; border: 0; border-top: 1px solid #E2E8F0;'>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# Procesamiento y Renderizado
+# 7. Procesamiento y Guardado en Estado
 # ------------------------------------------------------------------
 if consultar:
-    with st.spinner("Cargando datos hidrológicos..."):
+    with st.spinner("Cargando datos hidrológicos de la Estación 34..."):
         datos_crudos, error = obtener_serie_nivel(CODIGO_ESTACION, fecha_desde, fecha_hasta, calidad)
 
     if error:
         st.error(f"❌ {error}")
+        st.session_state.df_datos = None
     else:
         registros = obtener_todas_las_paginas(datos_crudos)
 
         if not registros:
-            st.warning("No se encontraron datos para las fechas seleccionadas.")
+            st.warning("No se encontraron registros para el rango de fechas seleccionado.")
+            st.session_state.df_datos = None
         else:
             df = pd.DataFrame(registros)
             df = df.rename(columns={"level_date": "fecha", "level": "nivel"})
@@ -241,56 +307,105 @@ if consultar:
             df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
             df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
 
-            # Convertir metros a cm si la escala viene en metros
-            df["nivel_cm"] = df["nivel"].apply(lambda v: v * 100 if v < 10 else v)
+            es_en_metros = (df["nivel"].max() < 10.0) if not df.empty else False
+            df["nivel_cm"] = df["nivel"] * 100.0 if es_en_metros else df["nivel"]
 
-            # ------------------------------------------------------
-            # SECCIÓN DEL CAUCE (Módulo Visual Solicitado)
-            # ------------------------------------------------------
-            st.markdown('<div class="cauce-card">', unsafe_allow_html=True)
-            
-            c_head1, c_head2 = st.columns([6, 4])
-            with c_head1:
-                st.markdown('<div style="color:#0284C7; font-size:1.6rem; font-weight:800; font-family:sans-serif;">SECCIÓN DEL CAUCE</div>', unsafe_allow_html=True)
-            with c_head2:
-                modo_vista = st.radio(
-                    "Selección Nivel",
-                    options=["🌊 NIVEL ACTUAL", "🔝 MÁXIMO DEL PERÍODO"],
-                    horizontal=True,
-                    label_visibility="collapsed"
-                )
+            df["diferencia_horas"] = df["fecha"].diff().dt.total_seconds() / 3600.0
+            df["tasa_cambio_m_h"] = (df["nivel"].diff() / df["diferencia_horas"]).replace([np.inf, -np.inf], np.nan)
 
-            # Determinar el registro según el botón seleccionado
-            if modo_vista == "🌊 NIVEL ACTUAL":
-                registro_sel = df.iloc[-1]
-            else:
-                registro_sel = df.loc[df["nivel_cm"].idxmax()]
+            # Persistir los datos procesados en la sesión
+            st.session_state.df_datos = df
 
-            valor_cm = registro_sel["nivel_cm"]
-            fecha_str = registro_sel["fecha"].strftime("%d/%m/%Y %H:%M Hr")
+# ------------------------------------------------------------------
+# 8. Renderizado Persistente
+# ------------------------------------------------------------------
+if st.session_state.df_datos is not None:
+    df = st.session_state.df_datos
 
-            # Encabezado del gráfico y Leyenda
-            st.markdown(f'<div style="text-align:center; font-weight:700; color:#0F172A; font-size:1.05rem;">Registrado el: {fecha_str}</div>', unsafe_allow_html=True)
-            st.markdown("""
-            <div style="text-align:center; font-size:0.9rem; margin-top:6px; margin-bottom:12px;">
-                <span style="font-weight:bold; color:#0F172A;">-- Nivel</span> &nbsp;&nbsp;&nbsp;
-                <span style="color:#10B981; font-weight:bold;">🟢 Seguro (&lt; 72 cm)</span> &nbsp;&nbsp;&nbsp;
-                <span style="color:#F59E0B; font-weight:bold;">🟡 Amarilla (72 - 107 cm)</span> &nbsp;&nbsp;&nbsp;
-                <span style="color:#EF4444; font-weight:bold;">🔴 Roja (&ge; 107 cm)</span>
-            </div>
-            """, unsafe_allow_html=True)
+    max_nivel_cm = df["nivel_cm"].max()
+    min_nivel_cm = df["nivel_cm"].min()
+    media_nivel_cm = df["nivel_cm"].mean()
+    std_nivel_cm = df["nivel_cm"].std()
+    max_tasa_subida = df["tasa_cambio_m_h"].max()
+    indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
 
-            # Renderizar gráfico
-            fig_cauce = generar_grafico_seccion_cauce(valor_cm, umbral_verde=72, umbral_amarillo=107, y_max=368)
-            st.plotly_chart(fig_cauce, use_container_width=True)
-            
-            st.markdown('</div>', unsafe_allow_html=True)
+    # --- SECCIÓN DEL CAUCE ---
+    st.markdown('<div class="cauce-card">', unsafe_allow_html=True)
+    
+    c_head1, c_head2 = st.columns([6, 4])
+    with c_head1:
+        st.markdown('<div style="color:#0284C7; font-size:1.6rem; font-weight:800;">SECCIÓN DEL CAUCE</div>', unsafe_allow_html=True)
+    with c_head2:
+        modo_vista = st.radio(
+            "Selección Nivel",
+            options=["🌊 NIVEL ACTUAL", "🔝 MÁXIMO DEL PERÍODO"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="modo_cauce_radio"
+        )
 
-            # ------------------------------------------------------
-            # Hidrograma Continuo
-            # ------------------------------------------------------
-            st.subheader("📈 Hidrograma: Serie de Nivel")
-            st.line_chart(df.set_index("fecha")["nivel_cm"], color="#0284C7")
+    if modo_vista == "🌊 NIVEL ACTUAL":
+        registro_sel = df.iloc[-1]
+    else:
+        registro_sel = df.loc[df["nivel_cm"].idxmax()]
+
+    valor_cm = registro_sel["nivel_cm"]
+    fecha_str = registro_sel["fecha"].strftime("%d/%m/%Y %H:%M Hr")
+
+    st.markdown(f'<div style="text-align:center; font-weight:700; color:#0F172A; font-size:1.05rem;">Registrado el: {fecha_str}</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="text-align:center; font-size:0.9rem; margin-top:6px; margin-bottom:12px;">
+        <span style="font-weight:bold; color:#0F172A;">-- Nivel</span> &nbsp;&nbsp;&nbsp;
+        <span style="color:#10B981; font-weight:bold;">🟢 Seguro (&lt; 72 cm)</span> &nbsp;&nbsp;&nbsp;
+        <span style="color:#F59E0B; font-weight:bold;">🟡 Amarilla (72 - 107 cm)</span> &nbsp;&nbsp;&nbsp;
+        <span style="color:#EF4444; font-weight:bold;">🔴 Roja (&ge; 107 cm)</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    fig_cauce = generar_grafico_seccion_cauce(valor_cm, umbral_verde=UMBRAL_VERDE, umbral_amarillo=UMBRAL_AMARILLO, y_max=368)
+    
+    # Deshabilitar barra de herramientas e interactividad de zoom
+    st.plotly_chart(
+        fig_cauce,
+        use_container_width=True,
+        config={'displayModeBar': False, 'scrollZoom': False}
+    )
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # --- SEMÁFORO Y MÉTRICAS ---
+    st.subheader("🚨 Estado de Alerta por Nivel")
+    col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+
+    with col_a1:
+        if max_nivel_cm >= UMBRAL_AMARILLO:
+            st.markdown(f'<div class="alert-card-roja"><h3 style="margin:0;">🔴 ALERTA ROJA</h3><p style="margin:0; font-size:1.1rem; font-weight:700;">Nivel máx: {max_nivel_cm:.1f} cm</p></div>', unsafe_allow_html=True)
+        elif max_nivel_cm >= UMBRAL_VERDE:
+            st.markdown(f'<div class="alert-card-amarilla"><h3 style="margin:0;">🟡 ALERTA AMARILLA</h3><p style="margin:0; font-size:1.1rem; font-weight:700;">Nivel máx: {max_nivel_cm:.1f} cm</p></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="alert-card-verde"><h3 style="margin:0;">🟢 NIVEL NORMAL</h3><p style="margin:0; font-size:1.1rem; font-weight:700;">Nivel máx: {max_nivel_cm:.1f} cm</p></div>', unsafe_allow_html=True)
+
+    col_a2.metric("Máxima Creciente / Hora", f"{max_tasa_subida:.2f} m/h" if pd.notnull(max_tasa_subida) else "N/A")
+    col_a3.metric("Nivel Mínimo Registrado", f"{min_nivel_cm:.1f} cm")
+    col_a4.metric("Desviación Estándar (σ)", f"{std_nivel_cm:.2f}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # --- RESUMEN Y GRÁFICAS ---
+    st.subheader("📋 Resumen General del Sensor (Estación 34)")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Lecturas Totales", len(df))
+    col2.metric("Nivel Promedio", f"{media_nivel_cm:.1f} cm")
+    col3.metric("Índice de Calidad", f"{indice_calidad} / 100")
+    col4.metric("Outliers Detectados", n_outliers)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    st.subheader("📈 Hidrograma: Serie de Nivel (cm)")
+    st.line_chart(df.set_index("fecha")["nivel_cm"], color="#0284C7")
+
+    st.subheader("📍 Ubicación de la Estación")
+    st.map(pd.DataFrame({"lat": [LAT_ESTACION], "lon": [LON_ESTACION]}), zoom=14)
 
 else:
-    st.info("Configura las fechas en el panel superior y pulsa **Consultar Estación 34**.")
+    st.info("Ajusta el rango de fechas en el panel superior y haz clic en **Consultar Estación 34**.")
