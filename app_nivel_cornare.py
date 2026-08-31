@@ -1,13 +1,3 @@
-"""
-App básica de Streamlit — Nivel de ríos/quebradas (CORNARE / MARCO)
---------------------------------------------------------------------
-Cada estudiante debe cambiar, como mínimo, el código de la estación
-en el sidebar. Los valores de fecha y calidad también son ajustables.
-
-Para correrla:
-    streamlit run app_nivel_cornare.py
-"""
-
 import requests
 import pandas as pd
 import numpy as np
@@ -17,11 +7,15 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ------------------------------------------------------------------
-# Coordenadas por defecto (Institución Universitaria Pascual Bravo)
-# Se usan solo si la API no trae la latitud/longitud de la estación.
+# Ubicación por defecto y mapeo local por código de estación
 # ------------------------------------------------------------------
-LAT_DEFECTO = 6.2766
-LON_DEFECTO = -75.5901
+LAT_DEFECTO = 6.0254
+LON_DEFECTO = -75.4337
+
+COORDENADAS_ESTACIONES = {
+    "34": (6.0254, -75.4337),  # La Ceja, Quebrada La Grande
+    # "OTRO_CODIGO": (lat, lon),
+}
 
 API_BASE_URL = "https://marco.cornare.gov.co/api/v1/estaciones"
 
@@ -68,20 +62,26 @@ def obtener_todas_las_paginas(datos_json, timeout=30):
     return registros
 
 
-def detectar_coordenadas(datos_json):
-    """Busca lat/lon en las llaves raíz de la respuesta. Si no las encuentra, usa el valor por defecto."""
-    if not isinstance(datos_json, dict):
-        return LAT_DEFECTO, LON_DEFECTO, False
+def detectar_coordenadas(datos_json, codigo_estacion=""):
+    """
+    Busca lat/lon en la API. Si no las encuentra, busca en el mapeo local
+    'COORDENADAS_ESTACIONES' y, como último recurso, usa las por defecto.
+    """
+    if isinstance(datos_json, dict):
+        lat = next((datos_json[k] for k in CANDIDATOS_LAT if k in datos_json), None)
+        lon = next((datos_json[k] for k in CANDIDATOS_LON if k in datos_json), None)
 
-    lat = next((datos_json[k] for k in CANDIDATOS_LAT if k in datos_json), None)
-    lon = next((datos_json[k] for k in CANDIDATOS_LON if k in datos_json), None)
+        if lat is not None and lon is not None:
+            try:
+                return float(lat), float(lon), "API"
+            except (TypeError, ValueError):
+                pass
 
-    if lat is not None and lon is not None:
-        try:
-            return float(lat), float(lon), True
-        except (TypeError, ValueError):
-            pass
-    return LAT_DEFECTO, LON_DEFECTO, False
+    if str(codigo_estacion) in COORDENADAS_ESTACIONES:
+        lat_map, lon_map = COORDENADAS_ESTACIONES[str(codigo_estacion)]
+        return lat_map, lon_map, "Mapeo local"
+
+    return LAT_DEFECTO, LON_DEFECTO, "Por defecto"
 
 
 def calcular_indice_calidad(df):
@@ -111,11 +111,11 @@ def calcular_indice_calidad(df):
 
 
 # ------------------------------------------------------------------
-# Sidebar — parámetros de la consulta (editables por cada estudiante)
+# Sidebar — parámetros de la consulta
 # ------------------------------------------------------------------
 st.sidebar.header("Parámetros de tu consulta")
 nombre_estudiante = st.sidebar.text_input("Nombre del estudiante", "Tu Nombre Aquí")
-codigo_estacion = st.sidebar.text_input("Código de estación", "42")
+codigo_estacion = st.sidebar.text_input("Código de estación", "34")
 fecha_desde = st.sidebar.date_input("Desde", pd.to_datetime("2026-08-23")).strftime("%Y-%m-%d")
 fecha_hasta = st.sidebar.date_input("Hasta", pd.to_datetime("2026-08-30")).strftime("%Y-%m-%d")
 calidad = st.sidebar.selectbox("Calidad", [1, 0], index=0, help="1 = solo datos validados")
@@ -145,7 +145,7 @@ if consultar:
             df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
             df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
 
-            lat, lon, coords_reales = detectar_coordenadas(datos_crudos)
+            lat, lon, origen_coords = detectar_coordenadas(datos_crudos, codigo_estacion)
             indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
 
             # --- Métricas principales ---
@@ -161,9 +161,14 @@ if consultar:
 
             # --- Mapa de la estación ---
             st.subheader("Ubicación de la estación")
-            if not coords_reales:
-                st.caption("La API no trajo latitud/longitud de la estación — se muestra el punto de partida (Pascual Bravo). Ajusta `CANDIDATOS_LAT` / `CANDIDATOS_LON` si conoces el nombre real de esas llaves.")
-            st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=10)
+            if origen_coords == "Mapeo local":
+                st.caption(f"📍 Coordenadas cargadas desde el mapeo local para la estación **{codigo_estacion}** ({lat}, {lon}).")
+            elif origen_coords == "Por defecto":
+                st.caption(f"⚠️ Coordenadas por defecto aplicadas ({lat}, {lon}).")
+            else:
+                st.caption(f"🌐 Coordenadas obtenidas directamente de la API ({lat}, {lon}).")
+
+            st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=12)
 
             # --- Detalle de calidad ---
             with st.expander("Detalle del índice de calidad"):
