@@ -159,7 +159,7 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
     fig.add_shape(type="line", x0=0, y0=nivel_cm, x1=7.8, y1=nivel_cm,
                   line=dict(color="#0F172A", width=2, dash="dash"))
 
-    # 5. Anotación con la etiqueta del nivel
+    # 5. Anotación con la etiqueta del nivel (sin borderradius)
     fig.add_annotation(
         x=7.8, y=nivel_cm,
         text=f"<b>{nivel_cm:.1f} cm ➔</b>",
@@ -168,7 +168,6 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
         bgcolor="#0F172A",
         bordercolor="#0F172A",
         borderpadding=5,
-        borderradius=10,
         xanchor="right"
     )
 
@@ -195,7 +194,6 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
         )
     )
     return fig
-
 # ------------------------------------------------------------------
 # Encabezado Principal
 # ------------------------------------------------------------------
