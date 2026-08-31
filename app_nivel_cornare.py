@@ -17,20 +17,6 @@ COORDENADAS_ESTACIONES = {
     "42": (6.2766, -75.5901),  # Institución Universitaria Pascual Bravo
 }
 
-# Imágenes de respaldo por estación (en caso de que la API no entregue fotos)
-IMAGENES_RESPALDO = {
-    "34": [
-        {
-            "url": "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=800&q=80",
-            "caption": "Sensor de nivel ultrassónico y gabinete de telemetría"
-        },
-        {
-            "url": "https://images.unsplash.com/photo-1509391365360-2e959784a276?auto=format&fit=crop&w=800&q=80",
-            "caption": "Panel solar y vista del cauce de la quebrada"
-        }
-    ]
-}
-
 API_BASE_URL = "https://marco.cornare.gov.co/api/v1/estaciones"
 
 LLAVE_FECHA = "level_date"
@@ -42,7 +28,7 @@ st.set_page_config(page_title="Nivel de estación — CORNARE", page_icon="🌊"
 
 
 # ------------------------------------------------------------------
-# Funciones de consulta y procesamiento
+# Funciones de consulta y detección
 # ------------------------------------------------------------------
 def obtener_serie_nivel(codigo_estacion, desde, hasta, calidad=1, timeout=30):
     url = f"{API_BASE_URL}/{codigo_estacion}/nivel"
@@ -74,23 +60,6 @@ def obtener_todas_las_paginas(datos_json, timeout=30):
         registros.extend(pagina.get("values", []))
         siguiente_url = pagina.get("next")
     return registros
-
-
-def obtener_imagenes_estacion(datos_json, codigo_estacion):
-    """Extrae las fotos enviadas por la API o recurre al catálogo predefinido."""
-    imagenes = []
-    if isinstance(datos_json, dict) and "images" in datos_json:
-        for img in datos_json["images"]:
-            if isinstance(img, dict) and "url" in img:
-                imagenes.append({
-                    "url": img["url"],
-                    "caption": img.get("description", f"Estación {codigo_estacion}")
-                })
-
-    if not imagenes and str(codigo_estacion) in IMAGENES_RESPALDO:
-        imagenes = IMAGENES_RESPALDO[str(codigo_estacion)]
-
-    return imagenes
 
 
 def detectar_coordenadas(datos_json, codigo_estacion=""):
@@ -139,7 +108,7 @@ def calcular_indice_calidad(df):
 
 
 # ------------------------------------------------------------------
-# Sidebar — Parámetros de consulta
+# Sidebar — Parámetros de consulta y opciones de análisis
 # ------------------------------------------------------------------
 st.sidebar.header("⚙️ Parámetros de consulta")
 nombre_estudiante = st.sidebar.text_input("Nombre del estudiante", "Tu Nombre Aquí")
@@ -161,7 +130,7 @@ st.title("🌊 Monitoreo Hidrológico de Ríos y Quebradas — CORNARE")
 st.caption(f"Estudiante: **{nombre_estudiante}** · Estación activa: **{codigo_estacion}**")
 
 # ------------------------------------------------------------------
-# Consulta y Procesamiento
+# Consulta y Procesamiento Avanzado
 # ------------------------------------------------------------------
 if consultar:
     with st.spinner("Consultando la API de CORNARE..."):
@@ -175,23 +144,26 @@ if consultar:
         if not registros:
             st.warning("No hay registros para esta estación y rango de fechas. Prueba otro código u otro rango.")
         else:
-            # Limpieza y preparación de datos
+            # 1. Limpieza y preparación de datos
             df = pd.DataFrame(registros)
             df = df.rename(columns={LLAVE_FECHA: "fecha", LLAVE_VALOR: "nivel"})
             df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
             df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
             df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
 
-            # Cálculos hidrológicos
+            # 2. Cálculos hidrológicos avanzadas
             lat, lon, origen_coords = detectar_coordenadas(datos_crudos, codigo_estacion)
             indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
-            imagenes_estacion = obtener_imagenes_estacion(datos_crudos, codigo_estacion)
 
+            # Suavizado de media móvil
             df["nivel_suavizado"] = df["nivel"].rolling(window=ventana_suavizado, min_periods=1).mean()
+
+            # Cálculo de la tasa de cambio / velocidad de crecimiento (m/h)
             df["diferencia_horas"] = df["fecha"].diff().dt.total_seconds() / 3600.0
             df["tasa_cambio_m_h"] = (df["nivel"].diff() / df["diferencia_horas"]).replace([np.inf, -np.inf], np.nan)
             max_tasa_subida = df["tasa_cambio_m_h"].max()
 
+            # Métricas estadísticas para umbrales de alerta
             media_nivel = df["nivel"].mean()
             std_nivel = df["nivel"].std()
             max_nivel = df["nivel"].max()
@@ -200,7 +172,11 @@ if consultar:
             umbral_amarillo = media_nivel + std_nivel
             umbral_rojo = media_nivel + (2 * std_nivel)
 
-            # --- 1. Semáforo de Alerta ---
+            # ------------------------------------------------------
+            # UI: Muestreo de Resultados
+            # ------------------------------------------------------
+
+            # --- 1. Semáforo de Alerta Temprana ---
             st.subheader("🚨 Estado de Alerta por Nivel")
             col_a1, col_a2, col_a3, col_a4 = st.columns(4)
 
@@ -217,7 +193,7 @@ if consultar:
 
             st.markdown("---")
 
-            # --- 2. Métricas del Sensor ---
+            # --- 2. Métricas de Integridad del Sensor ---
             st.subheader("📋 Resumen General del Sensor")
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Lecturas Totales", len(df))
@@ -225,21 +201,12 @@ if consultar:
             col3.metric("Índice de Calidad", f"{indice_calidad} / 100")
             col4.metric("Outliers Detectados", n_outliers)
 
-            # --- 3. Gráfico Interactivo ---
+            # --- 3. Gráfico Interactivo de Nivel ---
             st.subheader("📈 Hidrograma: Serie de Nivel y Tendencia")
+            st.caption(f"Comparativa entre el nivel real registrado y el promedio móvil ajustado a **{ventana_suavizado}** muestras.")
             st.line_chart(df.set_index("fecha")[["nivel", "nivel_suavizado"]])
 
-            # --- 4. Galería de Imágenes ---
-            st.subheader("🖼️ Galería de Imágenes")
-            if imagenes_estacion:
-                cols_img = st.columns(len(imagenes_estacion))
-                for idx, img_info in enumerate(imagenes_estacion):
-                    with cols_img[idx]:
-                        st.image(img_info["url"], caption=img_info["caption"], use_column_width=True)
-            else:
-                st.info("No hay fotografías disponibles en el registro para esta estación.")
-
-            # --- 5. Mapa de Ubicación Geográfica ---
+            # --- 4. Mapa de Ubicación Geográfica ---
             st.subheader("📍 Ubicación de la Estación")
             if origen_coords == "Mapeo local":
                 st.caption(f"📍 Coordenadas mapeadas localmente para la estación **{codigo_estacion}** ({lat}, {lon}).")
@@ -250,7 +217,7 @@ if consultar:
 
             st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=13)
 
-            # --- 6. Análisis Técnico Avanzado ---
+            # --- 5. Análisis Técnico Avanzado (Expanders) ---
             with st.expander("📊 Estadísticas hidrológicas y percentiles"):
                 col_s1, col_s2 = st.columns(2)
                 with col_s1:
