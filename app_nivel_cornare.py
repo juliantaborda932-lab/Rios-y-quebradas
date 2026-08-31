@@ -151,7 +151,7 @@ if consultar:
             df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
             df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
 
-            # 2. Cálculos hidrológicos avanzadas
+            # 2. Cálculos hidrológicos avanzados
             lat, lon, origen_coords = detectar_coordenadas(datos_crudos, codigo_estacion)
             indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
 
@@ -161,13 +161,23 @@ if consultar:
             # Cálculo de la tasa de cambio / velocidad de crecimiento (m/h)
             df["diferencia_horas"] = df["fecha"].diff().dt.total_seconds() / 3600.0
             df["tasa_cambio_m_h"] = (df["nivel"].diff() / df["diferencia_horas"]).replace([np.inf, -np.inf], np.nan)
-            max_tasa_subida = df["tasa_cambio_m_h"].max()
 
-            # Métricas estadísticas para umbrales de alerta
-            media_nivel = df["nivel"].mean()
-            std_nivel = df["nivel"].std()
-            max_nivel = df["nivel"].max()
-            min_nivel = df["nivel"].min()
+            # ------------------------------------------------------
+            # Filtrado de Outliers para alertas y estadísticas reales
+            # ------------------------------------------------------
+            Q1, Q3 = df["nivel"].quantile(0.25), df["nivel"].quantile(0.75)
+            IQR = Q3 - Q1
+            lim_inf, lim_sup = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
+            df_limpio = df[(df["nivel"] >= lim_inf) & (df["nivel"] <= lim_sup) & (df["nivel"] >= 0)]
+            if df_limpio.empty:
+                df_limpio = df
+
+            # Métricas estadísticas para umbrales de alerta (calculadas sobre datos válidos sin errores)
+            media_nivel = df_limpio["nivel"].mean()
+            std_nivel = df_limpio["nivel"].std()
+            max_nivel = df_limpio["nivel"].max()
+            min_nivel = df_limpio["nivel"].min()
+            max_tasa_subida = df_limpio["tasa_cambio_m_h"].max()
 
             umbral_amarillo = media_nivel + std_nivel
             umbral_rojo = media_nivel + (2 * std_nivel)
@@ -222,7 +232,7 @@ if consultar:
                 col_s1, col_s2 = st.columns(2)
                 with col_s1:
                     st.write("**Percentiles de Distribución de Nivel**")
-                    percentiles = df["nivel"].quantile([0.10, 0.25, 0.50, 0.75, 0.90, 0.95])
+                    percentiles = df_limpio["nivel"].quantile([0.10, 0.25, 0.50, 0.75, 0.90, 0.95])
                     df_p = pd.DataFrame({
                         "Percentil": [f"P{int(k*100)}" for k in percentiles.index],
                         "Nivel (m)": percentiles.values.round(3)
@@ -232,7 +242,7 @@ if consultar:
                 with col_s2:
                     st.write("**Parámetros de Variabilidad**")
                     st.write(f"- Rango total de variación ($\Delta_{{máx-mín}}$): **{max_nivel - min_nivel:.2f} m**")
-                    st.write(f"- Mediana ($P_{{50}}$): **{df['nivel'].median():.2f} m**")
+                    st.write(f"- Mediana ($P_{{50}}$): **{df_limpio['nivel'].median():.2f} m**")
                     st.write(f"- Umbral Alerta Amarilla ($\mu + 1\sigma$): **{umbral_amarillo:.2f} m**")
                     st.write(f"- Umbral Alerta Roja ($\mu + 2\sigma$): **{umbral_rojo:.2f} m**")
 
