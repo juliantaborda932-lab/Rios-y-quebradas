@@ -2,111 +2,227 @@ import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
+import plotly.graph_objects as go
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ------------------------------------------------------------------
-# Parámetros Fijos de la Estación y Estudiante
+# Configuración de Página y CSS
+# ------------------------------------------------------------------
+st.set_page_config(
+    page_title="Estación 34 — Julian Taborda Bedoya",
+    page_icon="🌊",
+    layout="wide"
+)
+
+st.markdown("""
+<style>
+    .stApp { background-color: #F8FAFC; }
+    
+    .titulo-principal {
+        color: #0F172A !important;
+        font-family: 'Segoe UI', Roboto, sans-serif;
+        font-weight: 800;
+        font-size: 2.2rem;
+        line-height: 1.2;
+        margin-bottom: 0.2rem;
+    }
+    .subtitulo-grande {
+        color: #1E293B !important;
+        font-family: 'Segoe UI', Roboto, sans-serif;
+        font-weight: 800;
+        font-size: 1.8rem;
+        line-height: 1.2;
+        margin-top: 0;
+        margin-bottom: 1.5rem;
+    }
+
+    /* Estilo del botón principal */
+    div.stButton > button:first-child {
+        background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%);
+        color: #FFFFFF !important;
+        border: none;
+        border-radius: 8px;
+        font-weight: 700;
+        font-size: 1rem;
+        padding: 0.6rem 1rem;
+        margin-top: 25px;
+    }
+
+    /* Tarjeta contenedora de la Sección del Cauce */
+    .cauce-card {
+        background-color: #FFFFFF;
+        padding: 24px;
+        border-radius: 16px;
+        border: 1px solid #E2E8F0;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+        margin-bottom: 25px;
+    }
+
+    [data-testid="stMetric"] {
+        background-color: #FFFFFF;
+        padding: 16px 20px;
+        border-radius: 12px;
+        border-left: 5px solid #0284C7;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ------------------------------------------------------------------
+# Parámetros Fijos
 # ------------------------------------------------------------------
 NOMBRE_ESTUDIANTE = "Julian Taborda Bedoya"
 CODIGO_ESTACION = "34"
 NOMBRE_ESTACION = "Quebrada La Grande (La Ceja)"
 LAT_ESTACION = 6.0254
 LON_ESTACION = -75.4337
-
 API_BASE_URL = "https://marco.cornare.gov.co/api/v1/estaciones"
-LLAVE_FECHA = "level_date"
-LLAVE_VALOR = "level"
-
-st.set_page_config(
-    page_title=f"Estación {CODIGO_ESTACION} — {NOMBRE_ESTUDIANTE}",
-    page_icon="🌊",
-    layout="wide"
-)
 
 # ------------------------------------------------------------------
-# Funciones de Consulta y Procesamiento
+# Funciones de Datos
 # ------------------------------------------------------------------
-def obtener_serie_nivel(codigo_estacion, desde, hasta, calidad=1, timeout=30):
+def obtener_serie_nivel(codigo_estacion, desde, hasta, calidad=1):
     url = f"{API_BASE_URL}/{codigo_estacion}/nivel"
     params = {"desde": desde, "hasta": hasta, "calidad": calidad}
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        resp = requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
-        if resp.status_code == 200:
-            return resp.json(), None
-        return None, f"HTTP {resp.status_code}"
-    except requests.exceptions.RequestException as e:
-        return None, f"Error de red: {e}"
+        resp = requests.get(url, params=params, headers=headers, timeout=30, verify=False)
+        return (resp.json(), None) if resp.status_code == 200 else (None, f"HTTP {resp.status_code}")
+    except Exception as e:
+        return None, str(e)
 
-
-def obtener_todas_las_paginas(datos_json, timeout=30):
+def obtener_todas_las_paginas(datos_json):
     registros = list(datos_json.get("values", []))
     siguiente_url = datos_json.get("next")
     while siguiente_url:
         try:
-            resp = requests.get(siguiente_url, timeout=timeout, verify=False)
-        except requests.exceptions.RequestException:
-            break
-        if resp.status_code != 200:
-            break
-        pagina = resp.json()
-        registros.extend(pagina.get("values", []))
-        siguiente_url = pagina.get("next")
+            resp = requests.get(siguiente_url, timeout=30, verify=False)
+            if resp.status_code != 200: break
+            pagina = resp.json()
+            registros.extend(pagina.get("values", []))
+            siguiente_url = pagina.get("next")
+        except: break
     return registros
 
+# ------------------------------------------------------------------
+# Generador de Gráfico: Sección del Cauce (Plotly)
+# ------------------------------------------------------------------
+def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107, y_max=368):
+    # Geometría del perfil de la quebrada (ancho en m, profundidad en cm)
+    x_base = np.array([0, 1.0, 1.6, 2.2, 5.3, 5.9, 6.5, 7.5])
+    y_base = np.array([150, 150, 15, 0, 0, 15, 220, 220])
+    
+    x_fine = np.linspace(0, 7.5, 300)
+    y_fine = np.interp(x_fine, x_base, y_base)
 
-def calcular_indice_calidad(df):
-    """Índice simple (0-100) combinando completitud de la serie y proporción de outliers."""
-    if df.empty or len(df) < 2:
-        return 0.0, 0, 0
+    fig = go.Figure()
 
-    df_idx = df.set_index("fecha")
-    frecuencia_tipica = df["fecha"].diff().dropna().mode()
-    if len(frecuencia_tipica) == 0:
-        return 0.0, 0, 0
-    frecuencia_tipica = frecuencia_tipica[0]
+    # 1. Dibujar Perfil del Terreno (Beige)
+    fig.add_trace(go.Scatter(
+        x=x_fine, y=y_fine,
+        fill='tozeroy',
+        fillcolor='#E5DEC9',
+        line=dict(color='#D4CBB4', width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
 
-    rango_completo = pd.date_range(start=df_idx.index.min(), end=df_idx.index.max(), freq=frecuencia_tipica)
-    esperados = len(rango_completo)
-    huecos = esperados - len(df_idx)
-    completitud = max(0.0, 1 - (huecos / esperados)) if esperados > 0 else 0.0
+    # 2. Dibujar Agua en el Cauce (Azul)
+    if nivel_cm > 0:
+        mask_agua = y_fine <= nivel_cm
+        if np.any(mask_agua):
+            x_water = x_fine[mask_agua]
+            y_water_bot = y_fine[mask_agua]
+            x_water_poly = np.concatenate([x_water, x_water[::-1]])
+            y_water_poly = np.concatenate([y_water_bot, np.full_like(x_water, nivel_cm)])
 
-    Q1, Q3 = df["nivel"].quantile(0.25), df["nivel"].quantile(0.75)
-    IQR = Q3 - Q1
-    lim_inf, lim_sup = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
-    es_outlier = (df["nivel"] < lim_inf) | (df["nivel"] > lim_sup) | (df["nivel"] < 0)
-    proporcion_outliers = es_outlier.mean()
+            fig.add_trace(go.Scatter(
+                x=x_water_poly, y=y_water_poly,
+                fill='toself',
+                fillcolor='rgba(125, 211, 252, 0.85)',
+                line=dict(color='#38BDF8', width=1),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
 
-    indice = (completitud * 0.7 + (1 - proporcion_outliers) * 0.3) * 100
-    return round(indice, 1), int(huecos), int(es_outlier.sum())
+    # 3. Barra Lateral del Semáforo (Verde < 72 | Amarillo 72-107 | Rojo >= 107)
+    fig.add_shape(type="rect", x0=7.6, y0=0, x1=8.1, y1=umbral_verde,
+                  fillcolor="#10B981", line_color="none")
+    fig.add_shape(type="rect", x0=7.6, y0=umbral_verde, x1=8.1, y1=umbral_amarillo,
+                  fillcolor="#F59E0B", line_color="none")
+    fig.add_shape(type="rect", x0=7.6, y0=umbral_amarillo, x1=8.1, y1=y_max,
+                  fillcolor="#EF4444", line_color="none")
 
+    # 4. Línea Horizontal de Nivel de Agua
+    fig.add_shape(type="line", x0=0, y0=nivel_cm, x1=7.8, y1=nivel_cm,
+                  line=dict(color="#0F172A", width=2, dash="dash"))
+
+    # 5. Anotación con la etiqueta del nivel (e.g. 44.3 cm ➔)
+    fig.add_annotation(
+        x=7.8, y=nivel_cm,
+        text=f"<b>{nivel_cm:.1f} cm ➔</b>",
+        showarrow=False,
+        font=dict(color="white", size=12),
+        bgcolor="#0F172A",
+        bordercolor="#0F172A",
+        borderpadding=5,
+        borderradius=10,
+        xanchor="right"
+    )
+
+    # Configuración Visual
+    fig.update_layout(
+        height=430,
+        margin=dict(l=40, r=20, t=10, b=40),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        xaxis=dict(
+            title=dict(text="<b>Ancho cauce (m)</b>", font=dict(color="#64748B", size=12)),
+            range=[-0.2, 8.3],
+            showgrid=False,
+            zeroline=False,
+            dtick=2
+        ),
+        yaxis=dict(
+            title=dict(text="<b>Nivel (cm)</b>", font=dict(color="#64748B", size=12)),
+            range=[-5, y_max + 10],
+            showgrid=True,
+            gridcolor='#F1F5F9',
+            zeroline=False,
+            tickvals=[0, 100, 200, 300, 368]
+        )
+    )
+    return fig
 
 # ------------------------------------------------------------------
-# Sidebar — Controles de Fecha Exclusivos
+# Encabezado Principal
 # ------------------------------------------------------------------
-st.sidebar.header("⚙️ Rango de Fechas")
-fecha_desde = st.sidebar.date_input("Desde", pd.to_datetime("2026-08-23")).strftime("%Y-%m-%d")
-fecha_hasta = st.sidebar.date_input("Hasta", pd.to_datetime("2026-08-30")).strftime("%Y-%m-%d")
-calidad = st.sidebar.selectbox("Filtro de Calidad", [1, 0], index=0, help="1 = solo datos validados")
-
-consultar = st.sidebar.button("🔍 Consultar Estación 34", type="primary")
+st.markdown(f'<div class="titulo-principal">🌊 Monitoreo Hidrológico — {NOMBRE_ESTACION}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="subtitulo-grande">Estudiante: {NOMBRE_ESTUDIANTE} · Estación activa: {CODIGO_ESTACION}</div>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# Encabezado Principal Personalizado
+# Panel Superior de Fechas
 # ------------------------------------------------------------------
-st.title(f"🌊 Monitoreo Hidrológico — {NOMBRE_ESTACION}")
-st.caption(f"Estudiante: **{NOMBRE_ESTUDIANTE}** · Estación activa: **{CODIGO_ESTACION}**")
+with st.container():
+    col_f1, col_f2, col_f3, col_f4 = st.columns([3, 3, 3, 3])
+    with col_f1:
+        fecha_desde = st.date_input("Fecha Desde", pd.to_datetime("2026-08-29")).strftime("%Y-%m-%d")
+    with col_f2:
+        fecha_hasta = st.date_input("Fecha Hasta", pd.to_datetime("2026-08-30")).strftime("%Y-%m-%d")
+    with col_f3:
+        calidad = st.selectbox("Filtro de Calidad", [1, 0], index=0)
+    with col_f4:
+        consultar = st.button("🔍 Consultar Estación 34", type="primary", use_container_width=True)
+
+st.markdown("<hr style='margin-top: 10px; margin-bottom: 25px; border: 0; border-top: 1px solid #E2E8F0;'>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# Consulta y Procesamiento de la Estación 34
+# Procesamiento y Renderizado
 # ------------------------------------------------------------------
 if consultar:
-    with st.spinner(f"Consultando datos para la Estación {CODIGO_ESTACION}..."):
+    with st.spinner("Cargando datos hidrológicos..."):
         datos_crudos, error = obtener_serie_nivel(CODIGO_ESTACION, fecha_desde, fecha_hasta, calidad)
 
     if error:
@@ -115,106 +231,64 @@ if consultar:
         registros = obtener_todas_las_paginas(datos_crudos)
 
         if not registros:
-            st.warning("No hay registros para la Estación 34 en este rango de fechas. Prueba con otras fechas.")
+            st.warning("No se encontraron datos para las fechas seleccionadas.")
         else:
-            # 1. Preparación de datos crudos
             df = pd.DataFrame(registros)
-            df = df.rename(columns={LLAVE_FECHA: "fecha", LLAVE_VALOR: "nivel"})
+            df = df.rename(columns={"level_date": "fecha", "level": "nivel"})
             df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
             df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
             df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
 
-            indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
+            # Convertir metros a cm si la escala viene en metros
+            df["nivel_cm"] = df["nivel"].apply(lambda v: v * 100 if v < 10 else v)
 
-            # 2. Filtrado IQR para métricas reales
-            Q1, Q3 = df["nivel"].quantile(0.25), df["nivel"].quantile(0.75)
-            IQR = Q3 - Q1
-            lim_inf, lim_sup = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
+            # ------------------------------------------------------
+            # SECCIÓN DEL CAUCE (Módulo Visual Solicitado)
+            # ------------------------------------------------------
+            st.markdown('<div class="cauce-card">', unsafe_allow_html=True)
             
-            df_limpio = df[(df["nivel"] >= lim_inf) & (df["nivel"] <= lim_sup) & (df["nivel"] >= 0)].copy()
-            if df_limpio.empty:
-                df_limpio = df.copy()
+            c_head1, c_head2 = st.columns([6, 4])
+            with c_head1:
+                st.markdown('<div style="color:#0284C7; font-size:1.6rem; font-weight:800; font-family:sans-serif;">SECCIÓN DEL CAUCE</div>', unsafe_allow_html=True)
+            with c_head2:
+                modo_vista = st.radio(
+                    "Selección Nivel",
+                    options=["🌊 NIVEL ACTUAL", "🔝 MÁXIMO DEL PERÍODO"],
+                    horizontal=True,
+                    label_visibility="collapsed"
+                )
 
-            # 3. Cálculos de la estación sobre datos filtrados
-            df_limpio["diferencia_horas"] = df_limpio["fecha"].diff().dt.total_seconds() / 3600.0
-            df_limpio["tasa_cambio_m_h"] = (df_limpio["nivel"].diff() / df_limpio["diferencia_horas"]).replace([np.inf, -np.inf], np.nan)
-
-            media_nivel = df_limpio["nivel"].mean()
-            std_nivel = df_limpio["nivel"].std()
-            max_nivel = df_limpio["nivel"].max()
-            min_nivel = df_limpio["nivel"].min()
-            max_tasa_subida = df_limpio["tasa_cambio_m_h"].max()
-
-            # Umbrales fijos para la Estación 34
-            umbral_amarillo = 25.0
-            umbral_rojo = 30.0
-
-            # ------------------------------------------------------
-            # UI: Muestreo de Resultados
-            # ------------------------------------------------------
-
-            # --- 1. Semáforo de Alerta ---
-            st.subheader("🚨 Estado de Alerta por Nivel")
-            col_a1, col_a2, col_a3, col_a4 = st.columns(4)
-
-            if max_nivel >= umbral_rojo:
-                col_a1.error(f"🔴 **ALERTA ROJA**\n\nNivel máx: **{max_nivel:.2f} m**")
-            elif max_nivel >= umbral_amarillo:
-                col_a1.warning(f"🟡 **ALERTA AMARILLA**\n\nNivel máx: **{max_nivel:.2f} m**")
+            # Determinar el registro según el botón seleccionado
+            if modo_vista == "🌊 NIVEL ACTUAL":
+                registro_sel = df.iloc[-1]
             else:
-                col_a1.success(f"🟢 **NIVEL NORMAL**\n\nNivel máx: **{max_nivel:.2f} m**")
+                registro_sel = df.loc[df["nivel_cm"].idxmax()]
 
-            col_a2.metric("Máxima Creciente / Hora", f"{max_tasa_subida:.2f} m/h" if pd.notnull(max_tasa_subida) else "N/A")
-            col_a3.metric("Nivel Mínimo Registrado", f"{min_nivel:.2f} m")
-            col_a4.metric("Desviación Estándar ($\sigma$)", f"{std_nivel:.2f}")
+            valor_cm = registro_sel["nivel_cm"]
+            fecha_str = registro_sel["fecha"].strftime("%d/%m/%Y %H:%M Hr")
 
-            st.markdown("---")
+            # Encabezado del gráfico y Leyenda
+            st.markdown(f'<div style="text-align:center; font-weight:700; color:#0F172A; font-size:1.05rem;">Registrado el: {fecha_str}</div>', unsafe_allow_html=True)
+            st.markdown("""
+            <div style="text-align:center; font-size:0.9rem; margin-top:6px; margin-bottom:12px;">
+                <span style="font-weight:bold; color:#0F172A;">-- Nivel</span> &nbsp;&nbsp;&nbsp;
+                <span style="color:#10B981; font-weight:bold;">🟢 Seguro (&lt; 72 cm)</span> &nbsp;&nbsp;&nbsp;
+                <span style="color:#F59E0B; font-weight:bold;">🟡 Amarilla (72 - 107 cm)</span> &nbsp;&nbsp;&nbsp;
+                <span style="color:#EF4444; font-weight:bold;">🔴 Roja (&ge; 107 cm)</span>
+            </div>
+            """, unsafe_allow_html=True)
 
-            # --- 2. Métricas del Sensor ---
-            st.subheader("📋 Resumen General del Sensor (Estación 34)")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Lecturas Totales", len(df))
-            col2.metric("Nivel Promedio", f"{media_nivel:.2f} m")
-            col3.metric("Índice de Calidad", f"{indice_calidad} / 100")
-            col4.metric("Outliers Detectados", n_outliers)
+            # Renderizar gráfico
+            fig_cauce = generar_grafico_seccion_cauce(valor_cm, umbral_verde=72, umbral_amarillo=107, y_max=368)
+            st.plotly_chart(fig_cauce, use_container_width=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
 
-            # --- 3. Hidrograma ---
+            # ------------------------------------------------------
+            # Hidrograma Continuo
+            # ------------------------------------------------------
             st.subheader("📈 Hidrograma: Serie de Nivel")
-            st.caption("Visualización del nivel registrado directamente por el sensor.")
-            st.line_chart(df.set_index("fecha")["nivel"])
-
-            # --- 4. Ubicación de la Estación 34 ---
-            st.subheader("📍 Ubicación de la Estación")
-            st.caption(f"📍 Coordenadas de la Estación 34 — {NOMBRE_ESTACION} ({LAT_ESTACION}, {LON_ESTACION})")
-            st.map(pd.DataFrame({"lat": [LAT_ESTACION], "lon": [LON_ESTACION]}), zoom=14)
-
-            # --- 5. Desplegables de Análisis ---
-            with st.expander("📊 Estadísticas hidrológicas y percentiles"):
-                col_s1, col_s2 = st.columns(2)
-                with col_s1:
-                    st.write("**Percentiles de Distribución de Nivel**")
-                    percentiles = df_limpio["nivel"].quantile([0.10, 0.25, 0.50, 0.75, 0.90, 0.95])
-                    df_p = pd.DataFrame({
-                        "Percentil": [f"P{int(k*100)}" for k in percentiles.index],
-                        "Nivel (m)": percentiles.values.round(3)
-                    })
-                    st.dataframe(df_p, use_container_width=True)
-
-                with col_s2:
-                    st.write("**Parámetros de Variabilidad**")
-                    st.write(f"- Rango de variación ($\Delta_{{máx-mín}}$): **{max_nivel - min_nivel:.2f} m**")
-                    st.write(f"- Mediana ($P_{{50}}$): **{df_limpio['nivel'].median():.2f} m**")
-                    st.write(f"- Umbral Alerta Amarilla: **{umbral_amarillo:.2f} m**")
-                    st.write(f"- Umbral Alerta Roja: **{umbral_rojo:.2f} m**")
-
-            with st.expander("🔍 Auditoría de Calidad"):
-                st.write(f"- Huecos de reporte en serie temporal: **{huecos}**")
-                st.write(f"- Lecturas fuera de rango (Outliers IQR): **{n_outliers}** de {len(df)}")
-
-            with st.expander("💾 Visualizar y descargar datos"):
-                st.dataframe(df_limpio[["fecha", "nivel", "tasa_cambio_m_h"]], use_container_width=True)
-                csv = df_limpio.to_csv(index=False).encode("utf-8")
-                st.download_button("⬇️ Descargar CSV Estación 34", csv, file_name=f"reporte_estacion_34_{fecha_desde}_a_{fecha_hasta}.csv", mime="text/csv")
+            st.line_chart(df.set_index("fecha")["nivel_cm"], color="#0284C7")
 
 else:
-    st.info("Selecciona el rango de fechas en la barra lateral y pulsa **Consultar Estación 34**.")
+    st.info("Configura las fechas en el panel superior y pulsa **Consultar Estación 34**.")
