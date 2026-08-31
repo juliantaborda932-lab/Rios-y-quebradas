@@ -110,6 +110,9 @@ def obtener_todas_las_paginas(datos_json):
 # Generador de Gráfico: Sección del Cauce (Plotly)
 # ------------------------------------------------------------------
 def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107, y_max=368):
+    # Asegurar que el nivel sea un valor numérico float nativo
+    nivel_cm = float(nivel_cm) if pd.notnull(nivel_cm) else 0.0
+
     # Geometría del perfil de la quebrada (ancho en m, profundidad en cm)
     x_base = np.array([0, 1.0, 1.6, 2.2, 5.3, 5.9, 6.5, 7.5])
     y_base = np.array([150, 150, 15, 0, 0, 15, 220, 220])
@@ -147,7 +150,7 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
                 hoverinfo='skip'
             ))
 
-    # 3. Barra Lateral del Semáforo (Verde < 72 | Amarillo 72-107 | Rojo >= 107)
+    # 3. Barra Lateral del Semáforo
     fig.add_shape(type="rect", x0=7.6, y0=0, x1=8.1, y1=umbral_verde,
                   fillcolor="#10B981", line_width=0)
     fig.add_shape(type="rect", x0=7.6, y0=umbral_verde, x1=8.1, y1=umbral_amarillo,
@@ -159,7 +162,7 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
     fig.add_shape(type="line", x0=0, y0=nivel_cm, x1=7.8, y1=nivel_cm,
                   line=dict(color="#0F172A", width=2, dash="dash"))
 
-    # 5. Anotación con la etiqueta del nivel (sin borderradius)
+    # 5. Anotación con la etiqueta del nivel
     fig.add_annotation(
         x=7.8, y=nivel_cm,
         text=f"<b>{nivel_cm:.1f} cm ➔</b>",
@@ -167,7 +170,7 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
         font=dict(color="white", size=12),
         bgcolor="#0F172A",
         bordercolor="#0F172A",
-        borderpadding=5,
+        borderpad=5,
         xanchor="right"
     )
 
@@ -194,6 +197,7 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
         )
     )
     return fig
+    
 # ------------------------------------------------------------------
 # Encabezado Principal
 # ------------------------------------------------------------------
