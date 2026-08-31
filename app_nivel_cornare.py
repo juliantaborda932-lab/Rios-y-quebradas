@@ -149,17 +149,17 @@ def generar_grafico_seccion_cauce(nivel_cm, umbral_verde=72, umbral_amarillo=107
 
     # 3. Barra Lateral del Semáforo (Verde < 72 | Amarillo 72-107 | Rojo >= 107)
     fig.add_shape(type="rect", x0=7.6, y0=0, x1=8.1, y1=umbral_verde,
-                  fillcolor="#10B981", line_color="none")
+                  fillcolor="#10B981", line_width=0)
     fig.add_shape(type="rect", x0=7.6, y0=umbral_verde, x1=8.1, y1=umbral_amarillo,
-                  fillcolor="#F59E0B", line_color="none")
+                  fillcolor="#F59E0B", line_width=0)
     fig.add_shape(type="rect", x0=7.6, y0=umbral_amarillo, x1=8.1, y1=y_max,
-                  fillcolor="#EF4444", line_color="none")
+                  fillcolor="#EF4444", line_width=0)
 
     # 4. Línea Horizontal de Nivel de Agua
     fig.add_shape(type="line", x0=0, y0=nivel_cm, x1=7.8, y1=nivel_cm,
                   line=dict(color="#0F172A", width=2, dash="dash"))
 
-    # 5. Anotación con la etiqueta del nivel (e.g. 44.3 cm ➔)
+    # 5. Anotación con la etiqueta del nivel
     fig.add_annotation(
         x=7.8, y=nivel_cm,
         text=f"<b>{nivel_cm:.1f} cm ➔</b>",
