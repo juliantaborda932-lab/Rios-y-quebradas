@@ -176,11 +176,12 @@ if consultar:
             min_nivel = df_limpio["nivel"].min()
             max_tasa_subida = df_limpio["tasa_cambio_m_h"].max()
 
-            # Umbrales basados en percentiles (P95 = Amarillo, P99 = Rojo) para evitar falsas alarmas
-            umbral_amarillo = df_limpio["nivel"].quantile(0.95)
-            umbral_rojo = df_limpio["nivel"].quantile(0.99)
+            # ------------------------------------------------------
+            # Umbrales Fijos de Alerta (en metros)
+            # ------------------------------------------------------
+            umbral_amarillo = 25.0
+            umbral_rojo = 30.0
 
-            # También guardamos el df procesado para gráficos
             df["nivel_suavizado"] = df["nivel"].rolling(window=ventana_suavizado, min_periods=1).mean()
 
             # ------------------------------------------------------
@@ -244,8 +245,8 @@ if consultar:
                     st.write("**Parámetros de Variabilidad**")
                     st.write(f"- Rango total de variación ($\Delta_{{máx-mín}}$): **{max_nivel - min_nivel:.2f} m**")
                     st.write(f"- Mediana ($P_{{50}}$): **{df_limpio['nivel'].median():.2f} m**")
-                    st.write(f"- Umbral Alerta Amarilla ($P_{{95}}$): **{umbral_amarillo:.2f} m**")
-                    st.write(f"- Umbral Alerta Roja ($P_{{99}}$): **{umbral_rojo:.2f} m**")
+                    st.write(f"- Umbral Alerta Amarilla: **{umbral_amarillo:.2f} m**")
+                    st.write(f"- Umbral Alerta Roja: **{umbral_rojo:.2f} m**")
 
             with st.expander("🔍 Auditoría de Calidad y Huecos de Información"):
                 st.write(f"- Huecos de reporte en serie temporal: **{huecos}**")
