@@ -14,7 +14,21 @@ LON_DEFECTO = -75.4337
 
 COORDENADAS_ESTACIONES = {
     "34": (6.0254, -75.4337),  # La Ceja, Quebrada La Grande
-    # "OTRO_CODIGO": (lat, lon),
+    "42": (6.2766, -75.5901),  # Institución Universitaria Pascual Bravo
+}
+
+# Imágenes de respaldo por estación (en caso de que la API no entregue fotos)
+IMAGENES_RESPALDO = {
+    "34": [
+        {
+            "url": "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=800&q=80",
+            "caption": "Sensor de nivel ultrassónico y gabinete de telemetría"
+        },
+        {
+            "url": "https://images.unsplash.com/photo-1509391365360-2e959784a276?auto=format&fit=crop&w=800&q=80",
+            "caption": "Panel solar y vista del cauce de la quebrada"
+        }
+    ]
 }
 
 API_BASE_URL = "https://marco.cornare.gov.co/api/v1/estaciones"
@@ -28,7 +42,7 @@ st.set_page_config(page_title="Nivel de estación — CORNARE", page_icon="🌊"
 
 
 # ------------------------------------------------------------------
-# Funciones de consulta
+# Funciones de consulta y procesamiento
 # ------------------------------------------------------------------
 def obtener_serie_nivel(codigo_estacion, desde, hasta, calidad=1, timeout=30):
     url = f"{API_BASE_URL}/{codigo_estacion}/nivel"
@@ -62,11 +76,25 @@ def obtener_todas_las_paginas(datos_json, timeout=30):
     return registros
 
 
+def obtener_imagenes_estacion(datos_json, codigo_estacion):
+    """Extrae las fotos enviadas por la API o recurre al catálogo predefinido."""
+    imagenes = []
+    if isinstance(datos_json, dict) and "images" in datos_json:
+        for img in datos_json["images"]:
+            if isinstance(img, dict) and "url" in img:
+                imagenes.append({
+                    "url": img["url"],
+                    "caption": img.get("description", f"Estación {codigo_estacion}")
+                })
+
+    if not imagenes and str(codigo_estacion) in IMAGENES_RESPALDO:
+        imagenes = IMAGENES_RESPALDO[str(codigo_estacion)]
+
+    return imagenes
+
+
 def detectar_coordenadas(datos_json, codigo_estacion=""):
-    """
-    Busca lat/lon en la API. Si no las encuentra, busca en el mapeo local
-    'COORDENADAS_ESTACIONES' y, como último recurso, usa las por defecto.
-    """
+    """Detección en API -> Mapeo Local -> Coordenadas por defecto."""
     if isinstance(datos_json, dict):
         lat = next((datos_json[k] for k in CANDIDATOS_LAT if k in datos_json), None)
         lon = next((datos_json[k] for k in CANDIDATOS_LON if k in datos_json), None)
@@ -111,24 +139,32 @@ def calcular_indice_calidad(df):
 
 
 # ------------------------------------------------------------------
-# Sidebar — parámetros de la consulta
+# Sidebar — Parámetros de consulta
 # ------------------------------------------------------------------
-st.sidebar.header("Parámetros de tu consulta")
+st.sidebar.header("⚙️ Parámetros de consulta")
 nombre_estudiante = st.sidebar.text_input("Nombre del estudiante", "Tu Nombre Aquí")
 codigo_estacion = st.sidebar.text_input("Código de estación", "34")
 fecha_desde = st.sidebar.date_input("Desde", pd.to_datetime("2026-08-23")).strftime("%Y-%m-%d")
 fecha_hasta = st.sidebar.date_input("Hasta", pd.to_datetime("2026-08-30")).strftime("%Y-%m-%d")
 calidad = st.sidebar.selectbox("Calidad", [1, 0], index=0, help="1 = solo datos validados")
+
+st.sidebar.markdown("---")
+st.sidebar.header("📊 Filtros de Visualización")
+ventana_suavizado = st.sidebar.slider("Ventana de suavizado (Media Móvil)", min_value=1, max_value=24, value=5)
+
 consultar = st.sidebar.button("🔍 Consultar", type="primary")
 
-st.title("🌊 Nivel de ríos y quebradas — CORNARE")
-st.caption(f"Estudiante: **{nombre_estudiante}** · Estación: **{codigo_estacion}**")
+# ------------------------------------------------------------------
+# Encabezado principal
+# ------------------------------------------------------------------
+st.title("🌊 Monitoreo Hidrológico de Ríos y Quebradas — CORNARE")
+st.caption(f"Estudiante: **{nombre_estudiante}** · Estación activa: **{codigo_estacion}**")
 
 # ------------------------------------------------------------------
-# Consulta y procesamiento
+# Consulta y Procesamiento
 # ------------------------------------------------------------------
 if consultar:
-    with st.spinner("Consultando la API..."):
+    with st.spinner("Consultando la API de CORNARE..."):
         datos_crudos, error = obtener_serie_nivel(codigo_estacion, fecha_desde, fecha_hasta, calidad)
 
     if error:
@@ -139,48 +175,109 @@ if consultar:
         if not registros:
             st.warning("No hay registros para esta estación y rango de fechas. Prueba otro código u otro rango.")
         else:
+            # Limpieza y preparación de datos
             df = pd.DataFrame(registros)
             df = df.rename(columns={LLAVE_FECHA: "fecha", LLAVE_VALOR: "nivel"})
             df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
             df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
             df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
 
+            # Cálculos hidrológicos
             lat, lon, origen_coords = detectar_coordenadas(datos_crudos, codigo_estacion)
             indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
+            imagenes_estacion = obtener_imagenes_estacion(datos_crudos, codigo_estacion)
 
-            # --- Métricas principales ---
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Lecturas", len(df))
-            col2.metric("Nivel promedio", f"{df['nivel'].mean():.2f}")
-            col3.metric("Índice de calidad", f"{indice_calidad} / 100")
-            col4.metric("Outliers detectados", n_outliers)
+            df["nivel_suavizado"] = df["nivel"].rolling(window=ventana_suavizado, min_periods=1).mean()
+            df["diferencia_horas"] = df["fecha"].diff().dt.total_seconds() / 3600.0
+            df["tasa_cambio_m_h"] = (df["nivel"].diff() / df["diferencia_horas"]).replace([np.inf, -np.inf], np.nan)
+            max_tasa_subida = df["tasa_cambio_m_h"].max()
 
-            # --- Gráfico de la serie ---
-            st.subheader("Serie de nivel")
-            st.line_chart(df.set_index("fecha")["nivel"])
+            media_nivel = df["nivel"].mean()
+            std_nivel = df["nivel"].std()
+            max_nivel = df["nivel"].max()
+            min_nivel = df["nivel"].min()
 
-            # --- Mapa de la estación ---
-            st.subheader("Ubicación de la estación")
-            if origen_coords == "Mapeo local":
-                st.caption(f"📍 Coordenadas cargadas desde el mapeo local para la estación **{codigo_estacion}** ({lat}, {lon}).")
-            elif origen_coords == "Por defecto":
-                st.caption(f"⚠️ Coordenadas por defecto aplicadas ({lat}, {lon}).")
+            umbral_amarillo = media_nivel + std_nivel
+            umbral_rojo = media_nivel + (2 * std_nivel)
+
+            # --- 1. Semáforo de Alerta ---
+            st.subheader("🚨 Estado de Alerta por Nivel")
+            col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+
+            if max_nivel >= umbral_rojo:
+                col_a1.error(f"🔴 **ALERTA ROJA**\n\nNivel máx: **{max_nivel:.2f} m**")
+            elif max_nivel >= umbral_amarillo:
+                col_a1.warning(f"🟡 **ALERTA AMARILLA**\n\nNivel máx: **{max_nivel:.2f} m**")
             else:
-                st.caption(f"🌐 Coordenadas obtenidas directamente de la API ({lat}, {lon}).")
+                col_a1.success(f"🟢 **NIVEL NORMAL**\n\nNivel máx: **{max_nivel:.2f} m**")
 
-            st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=12)
+            col_a2.metric("Máxima Creciente / Hora", f"{max_tasa_subida:.2f} m/h" if pd.notnull(max_tasa_subida) else "N/A")
+            col_a3.metric("Nivel Mínimo Registrado", f"{min_nivel:.2f} m")
+            col_a4.metric("Desviación Estándar ($\sigma$)", f"{std_nivel:.2f}")
 
-            # --- Detalle de calidad ---
-            with st.expander("Detalle del índice de calidad"):
-                st.write(f"- Huecos de reporte detectados: **{huecos}**")
-                st.write(f"- Outliers (IQR + nivel negativo): **{n_outliers}** de {len(df)} lecturas")
-                st.write("El índice combina completitud de la serie (70%) y proporción de datos sin outliers (30%).")
+            st.markdown("---")
 
-            # --- Tabla y descarga ---
-            with st.expander("Ver datos crudos"):
-                st.dataframe(df, use_container_width=True)
+            # --- 2. Métricas del Sensor ---
+            st.subheader("📋 Resumen General del Sensor")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Lecturas Totales", len(df))
+            col2.metric("Nivel Promedio", f"{media_nivel:.2f} m")
+            col3.metric("Índice de Calidad", f"{indice_calidad} / 100")
+            col4.metric("Outliers Detectados", n_outliers)
 
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Descargar CSV", csv, file_name=f"nivel_estacion_{codigo_estacion}.csv", mime="text/csv")
+            # --- 3. Gráfico Interactivo ---
+            st.subheader("📈 Hidrograma: Serie de Nivel y Tendencia")
+            st.line_chart(df.set_index("fecha")[["nivel", "nivel_suavizado"]])
+
+            # --- 4. Galería de Imágenes ---
+            st.subheader("🖼️ Galería de Imágenes")
+            if imagenes_estacion:
+                cols_img = st.columns(len(imagenes_estacion))
+                for idx, img_info in enumerate(imagenes_estacion):
+                    with cols_img[idx]:
+                        st.image(img_info["url"], caption=img_info["caption"], use_column_width=True)
+            else:
+                st.info("No hay fotografías disponibles en el registro para esta estación.")
+
+            # --- 5. Mapa de Ubicación Geográfica ---
+            st.subheader("📍 Ubicación de la Estación")
+            if origen_coords == "Mapeo local":
+                st.caption(f"📍 Coordenadas mapeadas localmente para la estación **{codigo_estacion}** ({lat}, {lon}).")
+            elif origen_coords == "Por defecto":
+                st.caption(f"⚠️ Coordenadas genéricas por defecto ({lat}, {lon}).")
+            else:
+                st.caption(f"🌐 Coordenadas directo desde la API ({lat}, {lon}).")
+
+            st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=13)
+
+            # --- 6. Análisis Técnico Avanzado ---
+            with st.expander("📊 Estadísticas hidrológicas y percentiles"):
+                col_s1, col_s2 = st.columns(2)
+                with col_s1:
+                    st.write("**Percentiles de Distribución de Nivel**")
+                    percentiles = df["nivel"].quantile([0.10, 0.25, 0.50, 0.75, 0.90, 0.95])
+                    df_p = pd.DataFrame({
+                        "Percentil": [f"P{int(k*100)}" for k in percentiles.index],
+                        "Nivel (m)": percentiles.values.round(3)
+                    })
+                    st.dataframe(df_p, use_container_width=True)
+
+                with col_s2:
+                    st.write("**Parámetros de Variabilidad**")
+                    st.write(f"- Rango total de variación ($\Delta_{{máx-mín}}$): **{max_nivel - min_nivel:.2f} m**")
+                    st.write(f"- Mediana ($P_{{50}}$): **{df['nivel'].median():.2f} m**")
+                    st.write(f"- Umbral Alerta Amarilla ($\mu + 1\sigma$): **{umbral_amarillo:.2f} m**")
+                    st.write(f"- Umbral Alerta Roja ($\mu + 2\sigma$): **{umbral_rojo:.2f} m**")
+
+            with st.expander("🔍 Auditoría de Calidad y Huecos de Información"):
+                st.write(f"- Huecos de reporte en serie temporal: **{huecos}**")
+                st.write(f"- Lecturas fuera de rango (Outliers IQR / Nivel < 0): **{n_outliers}** de {len(df)}")
+                st.write("El índice pondera la completitud del registro continuado (70%) junto a la baja tasa de anomalías (30%).")
+
+            with st.expander("💾 Visualizar y descargar datos crudos"):
+                st.dataframe(df[["fecha", "nivel", "nivel_suavizado", "tasa_cambio_m_h"]], use_container_width=True)
+                csv = df.to_csv(index=False).encode("utf-8")
+                st.download_button("⬇️ Descargar Reporte CSV", csv, file_name=f"reporte_estacion_{codigo_estacion}.csv", mime="text/csv")
+
 else:
-    st.info("Ajusta los parámetros en el sidebar y presiona **Consultar**.")
+    st.info("Configura los parámetros en el panel lateral y pulsa el botón **Consultar**.")
